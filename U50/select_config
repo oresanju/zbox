@@ -1,0 +1,649 @@
+#!/bin/sh
+echo "Content-Type: text/plain"
+echo ""
+
+
+# --- Default mode and engine if missing ---
+[ -z "$VPN_MODE" ] && VPN_MODE=$(cfg get vpn_mode 2>/dev/null || echo "redirect")
+VPN_TYPE=$(cfg get vpn_type 2>/dev/null)
+[ -z "$VPN_TYPE" ] && VPN_TYPE="xray"
+
+# Use dynamic config dir and port if provided
+if [ -n "$TMP_CONFIG_DIR" ]; then
+    CONFIG_DIR="$TMP_CONFIG_DIR"
+    SOCKS_PORT="${SOCKS_PORT_OVERRIDE:-1080}"
+	REDIRECT_PORT="3132"
+	if [ "$VPN_MODE" = "tun" ] || ([ "$VPN_MODE" = "redirect" ] && [ "$VPN_TYPE" = "singbox" ]); then
+        INBOUND_BLOCK='"inbounds": [
+            {
+                "type": "socks",
+                "tag": "socks-in",
+                "listen": "127.0.0.1",
+                "listen_port": '$SOCKS_PORT',
+                "sniff": true,
+                "sniff_override_destination": true
+            }
+        ],'
+    fi
+else
+    CONFIG_DIR="/bin/vpn/config"
+    SOCKS_PORT="1080"
+	REDIRECT_PORT="3131"
+	    # --- Inbound configuration based on mode ---
+    if [ "$VPN_MODE" = "tun" ]; then
+        INBOUND_BLOCK='"inbounds": [
+            {
+                "type": "tun",
+                "tag": "tun-in",
+                "interface_name": "tun0",
+                "address": ["10.0.0.2/24"],
+                "auto_route": true,
+                "strict_route": true,
+                "stack": "system",
+                "sniff": true,
+                "mtu": 1400
+            },
+            {
+                "type": "socks",
+                "tag": "socks-in",
+                "listen": "127.0.0.1",
+                "listen_port": '$SOCKS_PORT',
+                "sniff": true,
+                "sniff_override_destination": true
+            }
+        ],'
+    else
+        # Redirect mode with Sing-box engine
+        INBOUND_BLOCK='"inbounds": [
+            {
+                "type": "socks",
+                "tag": "socks-in",
+                "listen": "127.0.0.1",
+                "listen_port": '$SOCKS_PORT',
+                "sniff": true,
+                "sniff_override_destination": true
+            },
+            {
+                "type": "redirect",
+                "tag": "redirect-in",
+                "listen": "0.0.0.0",
+                "listen_port": '$REDIRECT_PORT',
+                "sniff": true,
+                "sniff_override_destination": true
+            }
+        ],'
+    fi
+fi
+
+CONFIG_FILE="$CONFIG_DIR/config.json"
+protocal="/tmp/protocol.json"
+
+rm -f /tmp/protocol.json
+
+# --- Read POST data ---
+POST_DATA=""
+if [ "$REQUEST_METHOD" = "POST" ] && [ -n "$CONTENT_LENGTH" ]; then
+    read -r -n "$CONTENT_LENGTH" POST_DATA
+fi
+
+# --- Extract parameters ---
+CONFIG=$(echo "$POST_DATA" | sed -n 's/^.*file=\([^&]*\).*$/\1/p')
+#VPN_MODE=$(echo "$POST_DATA" | sed -n 's/^.*vpn_mode=\([^&]*\).*$/\1/p')
+dns_type=$(echo "$POST_DATA" | awk -F'&' '{for(i=1;i<=NF;i++){if($i ~ /^dns_type=/){split($i,a,"="); print a[2]}}}')
+ip_version=$(echo "$POST_DATA" | awk -F'&' '{for(i=1;i<=NF;i++){if($i ~ /^ip_version=/){split($i,a,"="); print a[2]}}}')
+ip_resolve=$(echo "$POST_DATA" | awk -F'&' '{for(i=1;i<=NF;i++){if($i ~ /^ip_resolve=/){split($i,a,"="); print a[2]}}}')
+
+# URL decode function
+url_decode_full() {
+    printf '%b' "$(echo "$1" | sed 's/+/ /g;s/%/\\x/g')"
+}
+CONFIG=$(url_decode_full "$CONFIG")
+
+# --- Validate file ---
+[ -z "$CONFIG" ] && { echo '{"error":"No config file selected"}'; exit 1; }
+
+FULL_PATH="/bin/vpn/config/$CONFIG"
+[ ! -f "$FULL_PATH" ] && { echo "{\"error\":\"Selected config file does not exist ($FULL_PATH)\"}"; exit 1; }
+
+# --- Derive proto and alias ---
+proto=$(echo "$CONFIG" | cut -d'_' -f1)
+alias=$(echo "$CONFIG" | cut -d'_' -f2- | /bin/sed 's/\.txt$//')
+
+# --- Load content ---
+POST_INPUT=$(cat "$FULL_PATH")
+[ -z "$POST_INPUT" ] && { echo '{"error":"Config file is empty"}'; exit 1; }
+
+# --- URL decode function ---
+url_decode() {
+    local data="$1"
+    data="${data//+/ }"
+    printf '%b' "${data//%/\\x}"
+}
+
+# --- Base64 decode function ---
+decode_base64() {
+    local encoded="$1"
+    decoded=$(echo "$encoded" | tr '_-' '/+' | base64 -d 2>/dev/null)
+    if [ $? -eq 0 ] && [ -n "$decoded" ]; then
+        echo "$decoded"
+        return 0
+    else
+        return 1
+    fi
+}
+
+# --- Extract raw encoded value ---
+raw_link=$(echo "$POST_INPUT" | tr '&' '\n' | grep -E '^(vless|vmess|ss|ssr)=' | cut -d= -f2-)
+
+# --- Full URL decode (handle double encoding) ---
+links=$(url_decode "$raw_link")
+if echo "$links" | grep -q '%25'; then
+    links=$(url_decode "$links")
+fi
+
+# --- Determine protocol and URL-decode original link ---
+echo "$proto" > "$protocal"
+link_normal=$(url_decode "$links")
+link="$link_normal"
+
+# --- Handle Base64 encoded VLESS links ---
+if [ "$proto" = "vless" ]; then
+    content_after_proto=$(echo "$links" | /bin/sed 's#^vless://##' | tr -d '\n')
+    if echo "$content_after_proto" | grep -qE '^[A-Za-z0-9+/=_-]+$'; then
+        decoded_content=$(decode_base64 "$content_after_proto")
+        if [ $? -eq 0 ] && [ -n "$decoded_content" ]; then
+            if echo "$decoded_content" | grep -qE '^[A-Za-z0-9+/=_-]+$'; then
+                double_decoded=$(decode_base64 "$decoded_content")
+                if [ $? -eq 0 ] && [ -n "$double_decoded" ]; then
+                    link="vless://$double_decoded"
+                else
+                    link="vless://$decoded_content"
+                fi
+            else
+                link="vless://$decoded_content"
+            fi
+        fi
+    fi
+fi
+
+# --- Inbound block based on vpn_mode and engine ---
+if [ "$VPN_MODE" = "tun" ] || ([ "$VPN_MODE" = "redirect" ] && [ "$VPN_TYPE" = "singbox" ]); then
+    # =======================
+    # SING-BOX MODE (TUN or Redirect with Sing-box engine)
+    # =======================
+    
+    # --- DNS block ---
+    case "$dns_type" in
+        google) DNS_BLOCK='"dns":{"servers":[{"tag":"google","type":"udp","server":"8.8.8.8"}],"strategy":"'$ip_version'","disable_cache": false},';;
+        cloudflare) DNS_BLOCK='"dns":{"servers":[{"tag":"cloudflare","type":"udp","server":"1.1.1.1"}],"strategy":"'$ip_version'","disable_cache": false},';;
+        cloudflare-security) DNS_BLOCK='"dns":{"servers":[{"tag":"cloudflare-security","type":"udp","server":"1.1.1.2"}],"strategy":"'$ip_version'","disable_cache": false},';;
+        quad9) DNS_BLOCK='"dns":{"servers":[{"tag":"quad9","type":"udp","server":"9.9.9.9"}],"strategy":"'$ip_version'","disable_cache": false},';;
+        opendns) DNS_BLOCK='"dns":{"servers":[{"tag":"opendns","type":"udp","server":"208.67.222.222"}],"strategy":"'$ip_version'","disable_cache": false},';;
+        both) DNS_BLOCK='"dns":{"servers":[{"tag":"google","type":"udp","server":"8.8.8.8"},{"tag":"cloudflare","type":"udp","server":"1.1.1.1"}],"strategy":"'$ip_version'","disable_cache": false},';;
+        *) DNS_BLOCK='"dns":{"servers":[{"tag":"cloudflare","type":"udp","server":"1.1.1.1"}],"strategy":"'$ip_version'","disable_cache": false},';;
+    esac
+    
+    # --- Protocol parsing for Sing-box ---
+    case "$proto" in
+    vless)
+        UUID=$(echo "$link" | /bin/sed -n 's#vless://\([^@]*\)@.*#\1#p')
+        HOST=$(echo "$link" | /bin/sed -n 's#.*@\([^:]*\):[0-9]*.*#\1#p')
+        PORT=$(echo "$link" | /bin/sed -n 's#.*:\([0-9]*\)?.*#\1#p')
+        TYPE=$(echo "$link" | /bin/sed -n 's#.*type=\([^&#]*\).*#\1#p')
+        PATH=$(echo "$link" | /bin/sed -n 's#.*path=\([^&#]*\).*#\1#p')
+        HOSTHEADER=$(echo "$link" | /bin/sed -n 's#.*host=\([^&#]*\).*#\1#p')
+        SECURITY=$(echo "$link" | /bin/sed -n 's#.*security=\([^&#]*\).*#\1#p')
+        SNI=$(echo "$link" | /bin/sed -n 's#.*sni=\([^&#]*\).*#\1#p')
+        ALIAS=$(echo "$link" | /bin/sed -n 's/.*#\(.*\)$/\1/p')
+
+        [ -z "$ALIAS" ] && ALIAS="config"
+        [ -z "$PORT" ] && PORT=80
+        [ -z "$TYPE" ] && TYPE="ws"
+        [ -z "$PATH" ] && PATH="/"
+        [ -z "$HOSTHEADER" ] && HOSTHEADER="$HOST"
+
+        TLS_BLOCK='"tls": {"enabled": false}'
+        if [ "$SECURITY" = "tls" ]; then
+            [ -z "$SNI" ] && SNI="$HOSTHEADER"
+            TLS_BLOCK='"tls": {"enabled": true, "server_name": "'$SNI'", "insecure": true}'
+        fi
+        
+        if [ "$dns_type" = "both" ]; then
+            DEFAULT_RESOLVER_LINE=""
+        else
+            DEFAULT_RESOLVER_LINE='"default_domain_resolver": "'$dns_type'",'
+        fi
+        
+        if [ "$ip_resolve" = "on" ] && [ -n "$HOST" ]; then
+            resolved_ip=$(/bin/busyboxx nslookup "$HOST" 2>/dev/null \
+                | /bin/busyboxx awk '/Address [0-9]*: [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/ {print $3; exit}')
+            if [ -n "$resolved_ip" ]; then
+                echo "Resolved $HOST to $resolved_ip" >&2
+                HOST="$resolved_ip"
+            else
+                echo "Failed to resolve $HOST, keeping original" >&2
+            fi
+        fi
+        
+        OUTBOUND_BLOCK='"outbounds": [
+            {
+                "type": "vless",
+                "tag": "vless-out",
+                "server": "'$HOST'",
+                "server_port": '$PORT',
+                "uuid": "'$UUID'",
+                '$TLS_BLOCK',
+                "packet_encoding": "xudp",
+                "transport": {
+                    "type": "'$TYPE'",
+                    "path": "'$PATH'",
+                    "headers": { "Host": "'$HOSTHEADER'" }
+                }
+            },
+            {"type": "direct", "tag": "direct"},
+            {"type": "block", "tag": "block"}
+        ],'
+        
+        FINAL_TAG="vless-out"
+        ;;
+
+    vmess)
+        json=$(echo "$link" | /bin/sed 's#vmess://##' | base64 -d 2>/dev/null || echo "")
+        [ -z "$json" ] && { echo "Invalid VMess link"; exit 1; }
+
+        HOST=$(echo "$json" | /bin/grep -o '"add":"[^"]*"' | cut -d\" -f4)
+        PORT=$(echo "$json" | /bin/grep -o '"port":[0-9]*' | cut -d: -f2)
+        UUID=$(echo "$json" | /bin/grep -o '"id":"[^"]*"' | cut -d\" -f4)
+        SECURITY=$(echo "$json" | /bin/grep -o '"tls":"[^"]*"' | cut -d\" -f4)
+        SNI=$(echo "$json" | /bin/grep -o '"sni":"[^"]*"' | cut -d\" -f4)
+        TYPE=$(echo "$json" | /bin/grep -o '"net":"[^"]*"' | cut -d\" -f4)
+        PATH=$(echo "$json" | /bin/grep -o '"path":"[^"]*"' | cut -d\" -f4)
+        HOSTHEADER=$(echo "$json" | /bin/grep -o '"host":"[^"]*"' | cut -d\" -f4)
+        ALIAS=$(echo "$link" | /bin/sed -n 's/.*#\(.*\)$/\1/p')
+
+        [ -z "$ALIAS" ] && ALIAS="config"
+        [ -z "$PORT" ] && PORT=80
+        [ -z "$TYPE" ] && TYPE="ws"
+        [ -z "$PATH" ] && PATH="/"
+        [ -z "$HOSTHEADER" ] && HOSTHEADER="$HOST"
+
+        TLS_BLOCK='"tls": {"enabled": false}'
+        if [ "$SECURITY" = "tls" ] || [ "$PORT" = "443" ]; then
+            [ -z "$SNI" ] && SNI="$HOSTHEADER"
+            TLS_BLOCK='"tls": {"enabled": true, "server_name": "'$SNI'", "insecure": true}'
+        fi
+
+        if [ "$ip_resolve" = "on" ] && [ -n "$HOST" ]; then
+            resolved_ip=$(/bin/busyboxx nslookup "$HOST" 2>/dev/null \
+                | /bin/busyboxx awk '/Address [0-9]*: [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/ {print $3; exit}')
+            if [ -n "$resolved_ip" ]; then
+                echo "Resolved $HOST to $resolved_ip" >&2
+                HOST="$resolved_ip"
+            else
+                echo "Failed to resolve $HOST, keeping original" >&2
+            fi
+        fi
+
+        OUTBOUND_BLOCK='"outbounds": [
+            {
+                "type": "vmess",
+                "tag": "vmess-out",
+                "server": "'$HOST'",
+                "server_port": '$PORT',
+                "uuid": "'$UUID'",
+                "security": "auto",
+                '$TLS_BLOCK',
+                "packet_encoding": "xudp",
+                "transport": {
+                    "type": "'$TYPE'",
+                    "path": "'$PATH'",
+                    "headers": { "Host": "'$HOSTHEADER'" }
+                }
+            },
+            {"type": "direct", "tag": "direct"},
+            {"type": "block", "tag": "block"}
+        ],'
+        FINAL_TAG="vmess-out"
+        ;;
+
+    ss|ssr|shadowsocks)
+        DATA=$(echo "$link" | /bin/sed 's#ss://##')
+        DECODED=$(echo "$DATA" | base64 -d 2>/dev/null || echo "$DATA" | tr '_-' '/+' | base64 -d 2>/dev/null)
+        METHOD=$(echo "$DECODED" | cut -d: -f1)
+        REST=$(echo "$DECODED" | cut -d: -f2-)
+        PASSWORD=$(echo "$REST" | cut -d@ -f1)
+        HOST=$(echo "$REST" | cut -d@ -f2 | cut -d: -f1)
+        PORT=$(echo "$REST" | cut -d: -f2 | cut -d# -f1)
+        ALIAS=$(echo "$link" | /bin/sed -n 's/.*#\(.*\)$/\1/p')
+
+        [ -z "$ALIAS" ] && ALIAS="config"
+        
+        if [ "$ip_resolve" = "on" ] && [ -n "$HOST" ]; then
+            resolved_ip=$(/bin/busyboxx nslookup "$HOST" 2>/dev/null \
+                | /bin/busyboxx awk '/Address [0-9]*: [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/ {print $3; exit}')
+            if [ -n "$resolved_ip" ]; then
+                echo "Resolved $HOST to $resolved_ip" >&2
+                HOST="$resolved_ip"
+            else
+                echo "Failed to resolve $HOST, keeping original" >&2
+            fi
+        fi
+
+        OUTBOUND_BLOCK='"outbounds": [
+            {
+                "type": "shadowsocks",
+                "tag": "ss-out",
+                "server": "'$HOST'",
+                "server_port": '$PORT',
+                "method": "'$METHOD'",
+                "password": "'$PASSWORD'"
+            },
+            {"type": "direct", "tag": "direct"},
+            {"type": "block", "tag": "block"}
+        ],'
+        FINAL_TAG="ss-out"
+        ;;
+
+    *)
+        echo "Unsupported protocol: $proto"
+        exit 1
+        ;;
+    esac
+
+    # --- Write final Sing-box config.json ---
+    /bin/cat > "$CONFIG_FILE" <<EOF
+{
+    "log": {
+        "disabled": false,
+        "level": "info",
+        "output": "/tmp/sing-box.log"
+    },
+    $DNS_BLOCK
+    $INBOUND_BLOCK
+    $OUTBOUND_BLOCK
+    "route": {
+        "auto_detect_interface": true,
+        $DEFAULT_RESOLVER_LINE
+        "rules": [
+            { "ip_cidr": ["127.0.0.0/8","192.168.0.0/16","10.0.0.0/8","172.16.0.0/12"], "outbound": "direct" },
+            { "port": [53], "network": "udp", "outbound": "direct" }
+        ],
+        "final": "$FINAL_TAG" // $ALIAS
+    }
+}	
+EOF
+
+else
+    # =======================
+    # XRAY (REDIRECT) MODE
+    # =======================
+
+    # --- DNS type mapping ---
+    case "$dns_type" in
+        google)
+            DNS_SERVER="8.8.8.8"
+            ;;
+        cloudflare)
+            DNS_SERVER="1.1.1.1"
+            ;;
+        cloudflare-security)
+            DNS_SERVER="1.1.1.2"
+            ;;
+        quad9)
+            DNS_SERVER="9.9.9.9"
+            ;;
+        opendns)
+            DNS_SERVER="208.67.222.222"
+            ;;
+        both)
+            DNS_SERVER="8.8.8.8,1.1.1.1"
+            ;;
+        *)
+            DNS_SERVER="1.1.1.1"
+            ;;
+    esac
+
+    # --- IP version handling ---
+    case "$ip_version" in
+        prefer_ipv4)
+            DOMAIN_STRATEGY="UseIPv4"
+            ;;
+        prefer_ipv6)
+            DOMAIN_STRATEGY="UseIPv6"
+            ;;
+        *)
+            DOMAIN_STRATEGY="AsIs"
+            ;;
+    esac
+
+    # --- Common inbound block for redirect mode ---
+    INBOUND_BLOCK='
+    "inbounds": [
+        {
+            "port": '$SOCKS_PORT',
+            "listen": "127.0.0.1",
+            "protocol": "socks",
+            "settings": { "udp": true }
+        },
+        {
+            "port": '$REDIRECT_PORT',
+            "listen": "0.0.0.0",
+            "protocol": "dokodemo-door",
+            "settings": { "network": "tcp,udp", "followRedirect": true },
+            "sniffing": { "enabled": true, "destOverride": ["http","tls"] },
+            "tag": "redir-in"
+        }
+    ],'
+
+    # --- Protocol handling for Xray ---
+    case "$proto" in
+   vless)
+		UUID=$(echo "$link" | /bin/sed -n 's#vless://\([^@]*\)@.*#\1#p')
+		HOST=$(echo "$link" | /bin/sed -n 's#.*@\([^:]*\):[0-9]*.*#\1#p')
+		PORT=$(echo "$link" | /bin/sed -n 's#.*:\([0-9]*\)?.*#\1#p')
+		TYPE=$(echo "$link" | /bin/sed -n 's#.*type=\([^&#]*\).*#\1#p')
+		PATH_RAW=$(echo "$link" | /bin/sed -n 's#.*path=\([^&#]*\).*#\1#p')
+		HOSTHEADER_RAW=$(echo "$link" | /bin/sed -n 's#.*host=\([^&#]*\).*#\1#p')
+		SECURITY=$(echo "$link" | /bin/sed -n 's#.*security=\([^&#]*\).*#\1#p')
+		SNI=$(echo "$link" | /bin/sed -n 's#.*sni=\([^&#]*\).*#\1#p')
+		ALIAS=$(echo "$link" | /bin/sed -n 's/.*#\(.*\)$/\1/p')
+
+		[ -z "$ALIAS" ] && ALIAS="config"
+		[ -z "$PORT" ] && PORT=80
+		[ -z "$SECURITY" ] && SECURITY="none"
+		[ -z "$SNI" ] && SNI="$HOST"
+		[ -z "$TYPE" ] && TYPE="ws"
+
+		# Decode host and path exactly as provided
+		HOSTHEADER_CLEAN=$(url_decode "$HOSTHEADER_RAW")
+		PATH_CLEAN=$(url_decode "$PATH_RAW")
+
+		# Remove ONLY a trailing slash from host if present (e.g. "strx-payload://x/" → "strx-payload://x")
+		# But do NOT strip scheme or modify structure
+		HOSTHEADER_CLEAN=$(echo "$HOSTHEADER_CLEAN" | /bin/sed 's/\/$//')
+
+		# 🔥 DO NOT replace [host] anywhere — leave it literal for runtime handling
+		# PATH_CLEAN is used as-is
+
+		# Resolve IP if requested (only for connection address, not for Host header)
+		if [ "$ip_resolve" = "on" ] && [ -n "$HOST" ]; then
+			resolved_ip=$(/bin/busyboxx nslookup "$HOST" 2>/dev/null \
+				| /bin/busyboxx awk '/Address [0-9]*: [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/ {print $3; exit}')
+			[ -n "$resolved_ip" ] && HOST="$resolved_ip"
+		fi
+
+		# Build stream settings strictly by TYPE
+		if [ "$TYPE" = "httpupgrade" ]; then
+			STREAM_BLOCK='"streamSettings": {
+				"network": "httpupgrade",
+				"security": "'$SECURITY'"
+			'
+			if [ "$SECURITY" = "tls" ] || [ "$PORT" = "443" ]; then
+				STREAM_BLOCK="$STREAM_BLOCK,
+				\"tlsSettings\": { \"serverName\": \"$SNI\", \"allowInsecure\": true }"
+			fi
+			STREAM_BLOCK="$STREAM_BLOCK,
+				\"httpupgradeSettings\": {
+					\"host\": \"$HOSTHEADER_CLEAN\",
+					\"path\": \"$PATH_CLEAN\"
+				}
+			}"
+		else
+			# WebSocket: use raw path and host header
+			[ -z "$PATH_CLEAN" ] && PATH_CLEAN="/"
+			TLS_BLOCK=""
+			if [ "$SECURITY" = "tls" ] || [ "$PORT" = "443" ]; then
+				TLS_BLOCK='"tlsSettings": { "serverName": "'$SNI'", "allowInsecure": true },'
+			fi
+			STREAM_BLOCK='"streamSettings": {
+				"network": "ws",
+				"security": "'$SECURITY'",
+				'$TLS_BLOCK'
+				"wsSettings": {
+					"headers": { "Host": "'$HOSTHEADER_CLEAN'" },
+					"path": "'$PATH_CLEAN'"
+				}
+			}'
+		fi
+
+		OUTBOUND_BLOCK='
+		"outbounds": [
+			{
+				"protocol": "vless",
+				"settings": {
+					"vnext": [{
+						"address": "'$HOST'",
+						"port": '$PORT',
+						"users": [{ "id": "'$UUID'", "encryption": "none" }]
+					}]
+				},
+				'$STREAM_BLOCK',
+				"tag": "vless-out"
+			},
+			{"protocol": "freedom", "tag": "direct"},
+			{"protocol": "blackhole", "tag": "blocked"}
+		],'
+    ;;
+    vmess)
+        json=$(echo "$link" | /bin/sed 's#vmess://##' | base64 -d 2>/dev/null)
+        HOST=$(echo "$json" | grep -o '"add":"[^"]*"' | cut -d\" -f4)
+        PORT=$(echo "$json" | grep -o '"port":[0-9]*' | cut -d: -f2)
+        UUID=$(echo "$json" | grep -o '"id":"[^"]*"' | cut -d\" -f4)
+        TYPE=$(echo "$json" | grep -o '"net":"[^"]*"' | cut -d\" -f4)
+        PATH=$(echo "$json" | grep -o '"path":"[^"]*"' | cut -d\" -f4)
+        HOSTHEADER=$(echo "$json" | grep -o '"host":"[^"]*"' | cut -d\" -f4)
+        TLS=$(echo "$json" | grep -o '"tls":"[^"]*"' | cut -d\" -f4)
+        ALIAS=$(echo "$link" | /bin/sed -n 's/.*#\(.*\)$/\1/p')
+
+        [ -z "$ALIAS" ] && ALIAS="$config"
+        [ -z "$TLS" ] && TLS="tls"
+
+        if [ "$ip_resolve" = "on" ] && [ -n "$HOST" ]; then
+            resolved_ip=$(/bin/busyboxx nslookup "$HOST" 2>/dev/null \
+                | /bin/busyboxx awk '/Address [0-9]*: [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/ {print $3; exit}')
+            [ -n "$resolved_ip" ] && HOST="$resolved_ip"
+        fi
+
+        OUTBOUND_BLOCK='
+        "outbounds": [
+            {
+                "protocol": "vmess",
+                "settings": {
+                    "vnext": [{
+                        "address": "'$HOST'",
+                        "port": '$PORT',
+                        "users": [{ "id": "'$UUID'", "security": "auto" }]
+                    }]
+                },
+                "streamSettings": {
+                    "network": "'$TYPE'",
+                    "security": "'$TLS'",
+                    "tlsSettings": { "serverName": "'$HOSTHEADER'" },
+                    "wsSettings": { "path": "'$PATH'", "headers": {"Host": "'$HOSTHEADER'"} }
+                },
+                "tag": "vmess-out"
+            },
+            {"protocol": "freedom", "tag": "direct"},
+            {"protocol": "blackhole", "tag": "blocked"}
+        ],'
+        ;;
+    ss|shadowsocks)
+        DATA=$(echo "$link" | /bin/sed 's#ss://##')
+        DECODED=$(echo "$DATA" | base64 -d 2>/dev/null)
+        METHOD=$(echo "$DECODED" | cut -d: -f1)
+        REST=$(echo "$DECODED" | cut -d: -f2-)
+        PASSWORD=$(echo "$REST" | cut -d@ -f1)
+        HOST=$(echo "$REST" | cut -d@ -f2 | cut -d: -f1)
+        PORT=$(echo "$REST" | cut -d: -f2 | cut -d# -f1)
+        ALIAS=$(echo "$link" | /bin/sed -n 's/.*#\(.*\)$/\1/p')
+
+        [ -z "$ALIAS" ] && ALIAS="config"
+
+        if [ "$ip_resolve" = "on" ] && [ -n "$HOST" ]; then
+            resolved_ip=$(/bin/busyboxx nslookup "$HOST" 2>/dev/null \
+                | /bin/busyboxx awk '/Address [0-9]*: [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/ {print $3; exit}')
+            [ -n "$resolved_ip" ] && HOST="$resolved_ip"
+        fi
+
+        OUTBOUND_BLOCK='
+        "outbounds": [
+            {
+                "protocol": "shadowsocks",
+                "settings": {
+                    "servers": [{
+                        "address": "'$HOST'",
+                        "port": '$PORT',
+                        "method": "'$METHOD'",
+                        "password": "'$PASSWORD'"
+                    }]
+                },
+                "tag": "ss-out"
+            },
+            {"protocol": "freedom", "tag": "direct"},
+            {"protocol": "blackhole", "tag": "blocked"}
+        ],'
+        ;;
+    *)
+        echo "Unsupported protocol for redirect mode: $proto"
+        exit 1
+        ;;
+    esac
+
+    # --- Write final XRAY config ---
+    /bin/cat > "$CONFIG_FILE" <<EOF
+{
+    "remark": "$ALIAS",
+    "log": {"loglevel": "warning"},
+    "dns": {
+        "servers": [
+            "$DNS_SERVER",
+            {
+                "address": "localhost",
+                "domains": ["geosite:private"],
+                "expectIps": ["geoip:private"]
+            }
+        ],
+        "queryStrategy": "$DOMAIN_STRATEGY"
+    },
+    $INBOUND_BLOCK
+    $OUTBOUND_BLOCK
+    "routing": {
+        "domainStrategy": "$DOMAIN_STRATEGY",
+        "rules": [
+            {"type": "field", "ip": ["geoip:private"], "outboundTag": "direct"},
+            {"type": "field", "domain": ["geosite:private"], "outboundTag": "direct"}
+        ]
+    }
+}
+EOF
+
+fi
+
+# --- Store selected config for vpn_connect ---
+CONFIG_FILE="/tmp/selected_config.txt"
+if [ -n "$CONFIG" ]; then
+    echo "$CONFIG" > "$CONFIG_FILE"
+    #echo "[INFO] Stored selected config: $CONFIG" >> /tmp/vpn_fallback.log 2>/dev/null
+fi
+
+echo "{\"status\":\"ok\",\"proto\":\"$proto\",\"vpn_mode\":\"$VPN_MODE\",\"VPN_TYPE\":\"$VPN_TYPE\",\"DNS_TYPE\":\"$dns_type\",\"IP_Version\":\"$ip_version\",\"IP_Resolve\":\"$ip_resolve\",\"message\":\"VPN config applied successfully\"}"
