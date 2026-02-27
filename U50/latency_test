@@ -1,0 +1,295 @@
+#!/bin/sh
+# --- Watchdog single-server mode ---
+WATCHDOG_MODE=""
+TARGET_FILE=""
+
+for arg in "$@"; do
+    case "$arg" in
+        watchdog=1) WATCHDOG_MODE=1 ;;
+        file=*) TARGET_FILE="${arg#file=}" ;;
+    esac
+done
+
+if [ "$WATCHDOG_MODE" = "1" ] && [ -n "$TARGET_FILE" ]; then
+    CONFIG_DIR="/bin/vpn/config"
+    TEST_URL="http://www.gstatic.com/generate_204"
+    SOCKS_PORT=$((1080 + RANDOM % 100))
+    TMP_DIR="/tmp/latency_watchdog_${SOCKS_PORT}"
+    mkdir -p "$TMP_DIR"
+
+    # Cleanup function for watchdog mode
+    watchdog_pid=""
+    watchdog_cleanup() {
+        if [ -n "$watchdog_pid" ]; then
+            kill "$watchdog_pid" 2>/dev/null
+            wait "$watchdog_pid" 2>/dev/null
+            watchdog_pid=""
+        fi
+        rm -rf "$TMP_DIR" >/dev/null 2>&1
+    }
+    trap watchdog_cleanup EXIT INT TERM
+
+    # Use same encoding as main script
+    escaped_name=$(printf '%s' "$TARGET_FILE" | sed 's/ /%20/g; s/(/%28/g; s/)/%29/g')
+    POST_DATA="file=$escaped_name&vpn_mode=$(cfg get vpn_mode 2>/dev/null || echo redirect)"
+
+    export REQUEST_METHOD="POST"
+    export CONTENT_LENGTH=${#POST_DATA}
+    export SOCKS_PORT_OVERRIDE="$SOCKS_PORT"
+    export TMP_CONFIG_DIR="$TMP_DIR"
+    
+    printf "%s" "$POST_DATA" | /usr/zte_web/web/cgi-bin/select_config >/dev/null 2>&1
+    unset REQUEST_METHOD CONTENT_LENGTH SOCKS_PORT_OVERRIDE TMP_CONFIG_DIR
+
+    CONFIG_JSON="$TMP_DIR/config.json"
+    if [ ! -f "$CONFIG_JSON" ]; then
+        echo "fail (no config.json)"
+        exit 1
+    fi
+
+    # Use same engine detection as main script
+    VPN_MODE=$(cfg get vpn_mode 2>/dev/null)
+    [ -z "$VPN_MODE" ] && VPN_MODE="redirect"
+    VPN_TYPE=$(cfg get vpn_type 2>/dev/null)
+    [ -z "$VPN_TYPE" ] && VPN_TYPE="xray"
+
+    if [ "$VPN_MODE" = "tun" ] || ([ "$VPN_MODE" = "redirect" ] && [ "$VPN_TYPE" = "singbox" ]); then
+        TEST_BIN="/bin/sing-box"
+    else
+        TEST_BIN="/bin/xray"
+    fi
+
+    # Start engine
+    "$TEST_BIN" run -c "$CONFIG_JSON" >/dev/null 2>&1 &
+    watchdog_pid=$!
+    sleep 2
+
+    # Test connectivity and measure latency
+    curl_output=$(curl -4 -m 5 -s -o /dev/null -w "%{http_code} %{time_total}" \
+        --socks5-hostname 127.0.0.1:$SOCKS_PORT "$TEST_URL" 2>/dev/null)
+
+    http_code=$(echo "$curl_output" | awk '{print $1}')
+    time_total=$(echo "$curl_output" | awk '{print $2}')
+
+    if [ "$http_code" = "204" ] && [ -n "$time_total" ] && [ "$time_total" != "0.000000" ]; then
+        latency=$(awk "BEGIN {printf \"%.0f\", $time_total * 1000}")
+        echo "$latency""ms"
+        exit 0
+    else
+        echo "fail"
+        exit 1
+    fi
+fi
+
+echo "Content-Type: application/json"
+echo ""
+
+# --- Configurable paths & defaults ---
+CONFIG_DIR="/bin/vpn/config"
+CACHE_FILE="/tmp/latency_result.json"
+TIMESTAMP_FILE="/tmp/latency_timestamp"
+LOCK_FILE="/tmp/latency_lock"
+TMP_CONFIG_DIR="/tmp/latency_configs"
+TMP_RESULTS="/tmp/latency_results.tmp"
+XRAY_BIN="/bin/xray"
+SINGBOX_BIN="/bin/sing-box"
+TEST_URL="http://www.gstatic.com/generate_204"
+CACHE_MAX_AGE=300   # 5 minutes
+START_TIMEOUT=2
+CURL_TIMEOUT=5
+
+# --- Force refresh from arg or QUERY_STRING ---
+FORCE="$1"
+[ -z "$FORCE" ] && case "$QUERY_STRING" in *force=1*) FORCE=1 ;; esac
+
+# --- Return cached result if fresh ---
+now=$(date +%s 2>/dev/null)
+[ -z "$now" ] && now=0
+
+if [ -f "$CACHE_FILE" ] && [ -f "$TIMESTAMP_FILE" ] && [ -z "$FORCE" ]; then
+    last=$(cat "$TIMESTAMP_FILE" 2>/dev/null)
+    if [ -n "$last" ] && [ "$last" -gt 0 ]; then
+        age=$((now - last))
+        if [ "$age" -lt "$CACHE_MAX_AGE" ]; then
+            cat "$CACHE_FILE"
+            exit 0
+        fi
+    fi
+fi
+
+# --- Lock to prevent concurrent runs ---
+exec 200>"$LOCK_FILE"
+if ! flock -n 200; then
+    if [ -f "$CACHE_FILE" ]; then
+        cat "$CACHE_FILE"
+    else
+        echo '{"error":"Latency test already running"}'
+    fi
+    exit 0
+fi
+
+# --- Cleanup setup ---
+mkdir -p "$TMP_CONFIG_DIR"
+rm -f "$TMP_RESULTS"
+touch "$TMP_RESULTS"
+
+TEMP_ENGINE_PID=""
+
+cleanup() {
+    if [ -n "$TEMP_ENGINE_PID" ]; then
+        kill "$TEMP_ENGINE_PID" 2>/dev/null
+        wait "$TEMP_ENGINE_PID" 2>/dev/null
+        TEMP_ENGINE_PID=""
+    fi
+    rm -f "$LOCK_FILE"
+}
+trap 'cleanup; exit' INT TERM EXIT
+
+# --- Determine engine based on vpn_mode ---
+
+VPN_MODE=$(cfg get vpn_mode 2>/dev/null)
+[ -z "$VPN_MODE" ] && VPN_MODE="redirect"
+
+VPN_TYPE=$(cfg get vpn_type 2>/dev/null)
+[ -z "$VPN_TYPE" ] && VPN_TYPE="xray"
+
+if [ "$VPN_MODE" = "tun" ] || ([ "$VPN_MODE" = "redirect" ] && [ "$VPN_TYPE" = "singbox" ]); then
+	TEST_ENGINE="sing-box"
+    TEST_BIN="$SINGBOX_BIN"
+else
+    TEST_ENGINE="xray"
+    TEST_BIN="$XRAY_BIN"
+fi
+
+# --- Helper: generate config with dynamic port ---
+generate_config_for_file() {
+    file_name="$1"
+    socks_port="$2"
+    escaped_name=$(printf '%s' "$file_name" | sed 's/ /%20/g; s/(/%28/g; s/)/%29/g')
+    POST_DATA="file=$escaped_name&vpn_mode=$VPN_MODE"
+    export REQUEST_METHOD="POST"
+    export CONTENT_LENGTH=${#POST_DATA}
+    export TMP_CONFIG_DIR
+    export SOCKS_PORT_OVERRIDE="$socks_port"
+    printf "%s" "$POST_DATA" | /usr/zte_web/web/cgi-bin/select_config >/dev/null 2>&1
+    unset REQUEST_METHOD CONTENT_LENGTH SOCKS_PORT_OVERRIDE
+}
+
+# --- Helper: start temp engine ---
+start_temp_engine() {
+    config="$1"
+    if [ ! -f "$config" ]; then return 1; fi
+
+    "$TEST_BIN" run -c "$config" >/dev/null 2>&1 &
+    TEMP_ENGINE_PID=$!
+    sleep "$START_TIMEOUT"
+
+    if kill -0 "$TEMP_ENGINE_PID" 2>/dev/null; then
+        return 0
+    else
+        TEMP_ENGINE_PID=""
+        return 1
+    fi
+}
+
+# --- Helper: stop temp engine ---
+stop_temp_engine() {
+    if [ -n "$TEMP_ENGINE_PID" ]; then
+        # First try graceful termination
+        kill "$TEMP_ENGINE_PID" 2>/dev/null
+        sleep 0.5
+        
+        # Force kill if still running
+        if kill -0 "$TEMP_ENGINE_PID" 2>/dev/null; then
+            kill -9 "$TEMP_ENGINE_PID" 2>/dev/null
+        fi
+        
+        wait "$TEMP_ENGINE_PID" 2>/dev/null
+        TEMP_ENGINE_PID=""
+    fi
+}
+
+# --- Main test loop ---
+best_latency=999999
+best_file=""
+
+set -- "$CONFIG_DIR"/*.txt
+[ ! -f "$1" ] && set --
+
+for file in "$@"; do
+    [ -f "$file" ] || continue
+    name=$(basename "$file")
+
+    # Pick dynamic port (1081–1099)
+    port=$((1081 + RANDOM % 19))
+
+    # Generate config with this port
+    generate_config_for_file "$name" "$port"
+    TEST_CONFIG="$TMP_CONFIG_DIR/config.json"
+
+    if [ ! -f "$TEST_CONFIG" ]; then
+        echo "{\"file\":\"$name\",\"latency\":null}" >> "$TMP_RESULTS"
+        continue
+    fi
+
+    # Start temp engine
+    if ! start_temp_engine "$TEST_CONFIG"; then
+        echo "{\"file\":\"$name\",\"latency\":null}" >> "$TMP_RESULTS"
+        continue
+    fi
+
+    # --- Real connectivity test with HTTP code validation ---
+    curl_output=$(timeout -t "$CURL_TIMEOUT" curl -s -o /dev/null -w "%{http_code} %{time_total}" \
+        --socks5-hostname "127.0.0.1:$port" "$TEST_URL" 2>/dev/null)
+
+    stop_temp_engine
+
+    http_code=$(echo "$curl_output" | awk '{print $1}')
+    time_total=$(echo "$curl_output" | awk '{print $2}')
+
+    if [ "$http_code" = "204" ] && [ -n "$time_total" ] && [ "$time_total" != "0.000000" ]; then
+        latency=$(awk "BEGIN {printf \"%.0f\", $time_total * 1000}")
+        # Filter out unrealistically small (<50ms) or huge (>10s) results
+        if [ "$latency" -lt 50 ] || [ "$latency" -gt 10000 ]; then
+            latency="null"
+        fi
+    else
+        latency="null"
+    fi
+
+    if [ "$latency" != "null" ]; then
+        echo "{\"file\":\"$name\",\"latency\":$latency}" >> "$TMP_RESULTS"
+        if [ "$latency" -lt "$best_latency" ]; then
+            best_latency=$latency
+            best_file="$name"
+        fi
+    else
+        echo "{\"file\":\"$name\",\"latency\":null}" >> "$TMP_RESULTS"
+    fi
+    sleep 1
+done
+
+# --- Cache results ---
+if [ -s "$TMP_RESULTS" ]; then
+    echo "[" > "$CACHE_FILE"
+    sed '$!s/$/,/' "$TMP_RESULTS" >> "$CACHE_FILE"
+    echo "]" >> "$CACHE_FILE"
+else
+    echo "[]" > "$CACHE_FILE"
+fi
+
+echo "$now" > "$TIMESTAMP_FILE"
+
+# --- Auto-select best config ---
+if [ -n "$best_file" ]; then
+    escaped_best=$(printf '%s' "$best_file" | sed 's/ /%20/g; s/(/%28/g; s/)/%29/g')
+    POST_DATA="file=$escaped_best&vpn_mode=$VPN_MODE"
+    export REQUEST_METHOD="POST"
+    export CONTENT_LENGTH=${#POST_DATA}
+    printf "%s" "$POST_DATA" | /usr/zte_web/web/cgi-bin/select_config >/dev/null 2>&1
+    unset REQUEST_METHOD CONTENT_LENGTH
+fi
+
+cleanup
+cat "$CACHE_FILE"
+exit 0
