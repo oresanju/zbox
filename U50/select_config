@@ -437,43 +437,39 @@ else
 
     # --- Protocol handling for Xray ---
     case "$proto" in
-   vless)
-		UUID=$(echo "$link" | /bin/sed -n 's#vless://\([^@]*\)@.*#\1#p')
-		HOST=$(echo "$link" | /bin/sed -n 's#.*@\([^:]*\):[0-9]*.*#\1#p')
-		PORT=$(echo "$link" | /bin/sed -n 's#.*:\([0-9]*\)?.*#\1#p')
-		TYPE=$(echo "$link" | /bin/sed -n 's#.*type=\([^&#]*\).*#\1#p')
-		PATH_RAW=$(echo "$link" | /bin/sed -n 's#.*path=\([^&#]*\).*#\1#p')
-		HOSTHEADER_RAW=$(echo "$link" | /bin/sed -n 's#.*host=\([^&#]*\).*#\1#p')
-		SECURITY=$(echo "$link" | /bin/sed -n 's#.*security=\([^&#]*\).*#\1#p')
-		SNI=$(echo "$link" | /bin/sed -n 's#.*sni=\([^&#]*\).*#\1#p')
-		ALIAS=$(echo "$link" | /bin/sed -n 's/.*#\(.*\)$/\1/p')
+    vless)
+        UUID=$(echo "$link" | /bin/sed -n 's#vless://\([^@]*\)@.*#\1#p')
+        HOST=$(echo "$link" | /bin/sed -n 's#.*@\([^:]*\):[0-9]*.*#\1#p')
+        PORT=$(echo "$link" | /bin/sed -n 's#.*:\([0-9]*\)?.*#\1#p')
+        TYPE=$(echo "$link" | /bin/sed -n 's#.*type=\([^&#]*\).*#\1#p')
+        PATH_RAW=$(echo "$link" | /bin/sed -n 's#.*path=\([^&#]*\).*#\1#p')
+        HOSTHEADER_RAW=$(echo "$link" | /bin/sed -n 's#.*host=\([^&#]*\).*#\1#p')
+        SECURITY=$(echo "$link" | /bin/sed -n 's#.*security=\([^&#]*\).*#\1#p')
+        SNI=$(echo "$link" | /bin/sed -n 's#.*sni=\([^&#]*\).*#\1#p')
+        ALIAS=$(echo "$link" | /bin/sed -n 's/.*#\(.*\)$/\1/p')
 
-		[ -z "$ALIAS" ] && ALIAS="config"
-		[ -z "$PORT" ] && PORT=80
-		[ -z "$SECURITY" ] && SECURITY="none"
-		[ -z "$SNI" ] && SNI="$HOST"
-		[ -z "$TYPE" ] && TYPE="ws"
+        [ -z "$ALIAS" ] && ALIAS="config"
+        [ -z "$PORT" ] && PORT=80
+        [ -z "$SECURITY" ] && SECURITY="none"
+        [ -z "$SNI" ] && SNI="$HOST"
+        [ -z "$TYPE" ] && TYPE="ws"
 
-		# Decode host and path exactly as provided
-		HOSTHEADER_CLEAN=$(url_decode "$HOSTHEADER_RAW")
-		PATH_CLEAN=$(url_decode "$PATH_RAW")
+        # decode path/host from URL-encoded form
+        HOSTHEADER_CLEAN=$(url_decode "$HOSTHEADER_RAW")
+        PATH_CLEAN=$(url_decode "$PATH_RAW")
 
-		# Remove ONLY a trailing slash from host if present (e.g. "strx-payload://x/" → "strx-payload://x")
-		# But do NOT strip scheme or modify structure
-		HOSTHEADER_CLEAN=$(echo "$HOSTHEADER_CLEAN" | /bin/sed 's/\/$//')
+        # strip only trailing slash on host header
+        HOSTHEADER_CLEAN=$(echo "$HOSTHEADER_CLEAN" | /bin/sed 's/\/$//')
 
-		# 🔥 DO NOT replace [host] anywhere — leave it literal for runtime handling
-		# PATH_CLEAN is used as-is
+        # optional A-record resolve for connect address only
+        if [ "$ip_resolve" = "on" ] && [ -n "$HOST" ]; then
+            resolved_ip=$(/bin/busyboxx nslookup "$HOST" 2>/dev/null \
+                | /bin/busyboxx awk '/Address [0-9]*: [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/ {print $3; exit}')
+            [ -n "$resolved_ip" ] && HOST="$resolved_ip"
+        fi
 
-		# Resolve IP if requested (only for connection address, not for Host header)
-		if [ "$ip_resolve" = "on" ] && [ -n "$HOST" ]; then
-			resolved_ip=$(/bin/busyboxx nslookup "$HOST" 2>/dev/null \
-				| /bin/busyboxx awk '/Address [0-9]*: [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/ {print $3; exit}')
-			[ -n "$resolved_ip" ] && HOST="$resolved_ip"
-		fi
-
-		# Build stream settings strictly by TYPE
-		if [ "$TYPE" = "httpupgrade" ]; then
+        # build streamSettings based on TYPE
+        if [ "$TYPE" = "httpupgrade" ]; then
 			STREAM_BLOCK='"streamSettings": {
 				"network": "httpupgrade",
 				"security": "'$SECURITY'"
@@ -488,42 +484,58 @@ else
 					\"path\": \"$PATH_CLEAN\"
 				}
 			}"
-		else
-			# WebSocket: use raw path and host header
-			[ -z "$PATH_CLEAN" ] && PATH_CLEAN="/"
-			TLS_BLOCK=""
-			if [ "$SECURITY" = "tls" ] || [ "$PORT" = "443" ]; then
-				TLS_BLOCK='"tlsSettings": { "serverName": "'$SNI'", "allowInsecure": true },'
-			fi
-			STREAM_BLOCK='"streamSettings": {
-				"network": "ws",
-				"security": "'$SECURITY'",
-				'$TLS_BLOCK'
-				"wsSettings": {
-					"headers": { "Host": "'$HOSTHEADER_CLEAN'" },
-					"path": "'$PATH_CLEAN'"
-				}
-			}'
-		fi
+        elif [ "$TYPE" = "xhttp" ]; then
+            # XHTTP transport
+            [ -z "$PATH_CLEAN" ] && PATH_CLEAN="/"
+            STREAM_BLOCK='"streamSettings": {
+                "network": "xhttp",
+                "security": "'$SECURITY'"'
+            if [ "$SECURITY" = "tls" ] || [ "$PORT" = "443" ]; then
+                STREAM_BLOCK="$STREAM_BLOCK,
+                \"tlsSettings\": { \"serverName\": \"$SNI\", \"allowInsecure\": true }"
+            fi
+            STREAM_BLOCK="$STREAM_BLOCK,
+                \"xhttpSettings\": {
+                    \"path\": \"$PATH_CLEAN\",
+                    \"host\": \"$HOSTHEADER_CLEAN\"
+                }
+            }"
+        else
+            # default WebSocket
+            [ -z "$PATH_CLEAN" ] && PATH_CLEAN="/"
+            TLS_BLOCK=""
+            if [ "$SECURITY" = "tls" ] || [ "$PORT" = "443" ]; then
+                TLS_BLOCK='"tlsSettings": { "serverName": "'$SNI'", "allowInsecure": true },'
+            fi
+            STREAM_BLOCK='"streamSettings": {
+                "network": "ws",
+                "security": "'$SECURITY'",
+                '$TLS_BLOCK'
+                "wsSettings": {
+                    "headers": { "Host": "'$HOSTHEADER_CLEAN'" },
+                    "path": "'$PATH_CLEAN'"
+                }
+            }'
+        fi
 
-		OUTBOUND_BLOCK='
-		"outbounds": [
-			{
-				"protocol": "vless",
-				"settings": {
-					"vnext": [{
-						"address": "'$HOST'",
-						"port": '$PORT',
-						"users": [{ "id": "'$UUID'", "encryption": "none" }]
-					}]
-				},
-				'$STREAM_BLOCK',
-				"tag": "vless-out"
-			},
-			{"protocol": "freedom", "tag": "direct"},
-			{"protocol": "blackhole", "tag": "blocked"}
-		],'
-    ;;
+        OUTBOUND_BLOCK='
+        "outbounds": [
+            {
+                "protocol": "vless",
+                "settings": {
+                    "vnext": [{
+                        "address": "'$HOST'",
+                        "port": '$PORT',
+                        "users": [{ "id": "'$UUID'", "encryption": "none" }]
+                    }]
+                },
+                '$STREAM_BLOCK',
+                "tag": "vless-out"
+            },
+            {"protocol": "freedom", "tag": "direct"},
+            {"protocol": "blackhole", "tag": "blocked"}
+        ],'
+        ;;
     vmess)
         json=$(echo "$link" | /bin/sed 's#vmess://##' | base64 -d 2>/dev/null)
         HOST=$(echo "$json" | grep -o '"add":"[^"]*"' | cut -d\" -f4)
