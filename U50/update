@@ -1,0 +1,42 @@
+#!/bin/sh
+
+echo "Update Z-Box for Zte U50"
+
+# 1. Download files with a check to ensure it worked
+echo "Downloading patched files from the server..."
+curl -fsLo "/tmp/select_config" "https://raw.githubusercontent.com/oresanju/zbox/main/U50/select_config"
+curl -fsLo "/tmp/latency_test" "https://raw.githubusercontent.com/oresanju/zbox/main/U50/latency_test"
+curl -fsLo "/tmp/ray" "https://raw.githubusercontent.com/oresanju/xray/main/26.2.6/xray_armv7_18.03.26_multipath"
+
+# Check if the files actually exist in /tmp before proceeding
+if [ ! -f "/tmp/xray" ] || [ ! -f "/tmp/latency_test" ]; then
+    echo "❌ Error: Download failed! Aborting."
+    exit 1
+fi
+
+# 2. Prepare the filesystem
+echo "Patching Z-Box..."
+
+cat /proc/driver/sensor_id
+mount -o remount rw /
+mount -o remount,rw /usr/zte_web
+
+rm -f /bin/xray /usr/zte_web/web/cgi-bin/select_config /usr/zte_web/web/cgi-bin/latency_test
+
+# 3. Apply the patch
+cp -f "/tmp/select_config" "/usr/zte_web/web/cgi-bin/select_config"
+cp -f "/tmp/latency_test" "/usr/zte_web/web/cgi-bin/latency_test"
+cp -f "/tmp/xray" "/bin/xray"
+
+
+# 4. Cleanup and reset permissions
+rm -f /tmp/select_config /tmp/latency_test /tmp/xray
+
+# Remount back to Read-Only for safety
+chmod +x /usr/zte_web/web/cgi-bin/select_config
+chmod +x /usr/zte_web/web/cgi-bin/latency_test
+chmod +x /bin/xray
+
+# mount -o remount,ro /usr/zte_web
+
+echo "=== DONE! >> VPN Successfully Patched << ==="
