@@ -6,7 +6,7 @@ echo "Update Z-Box for Zte U50"
 echo "Downloading patched files from the server..."
 curl -fsLo "/tmp/select_config" "https://raw.githubusercontent.com/oresanju/zbox/main/U50/select_config"
 curl -fsLo "/tmp/latency_test" "https://raw.githubusercontent.com/oresanju/zbox/main/U50/latency_test"
-curl -fsLo "/tmp/ray" "https://raw.githubusercontent.com/oresanju/xray/main/26.2.6/xray_armv7_18.03.26_multipath"
+curl -fsLo "/tmp/xray" "https://raw.githubusercontent.com/oresanju/xray/main/26.2.6/xray_armv7_18.03.26_multipath"
 
 sleep 1
 
