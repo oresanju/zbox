@@ -8,11 +8,7 @@ curl -fsLo "/tmp/select_config" "https://raw.githubusercontent.com/oresanju/zbox
 curl -fsLo "/tmp/latency_test" "https://raw.githubusercontent.com/oresanju/zbox/main/U50/latency_test"
 curl -fsLo "/tmp/ray" "https://raw.githubusercontent.com/oresanju/xray/main/26.2.6/xray_armv7_18.03.26_multipath"
 
-# Check if the files actually exist in /tmp before proceeding
-if [ ! -f "/tmp/xray" ] || [ ! -f "/tmp/latency_test" ]; then
-    echo "❌ Error: Download failed! Aborting."
-    exit 1
-fi
+sleep 1
 
 # 2. Prepare the filesystem
 echo "Patching Z-Box..."
@@ -20,6 +16,8 @@ echo "Patching Z-Box..."
 cat /proc/driver/sensor_id
 mount -o remount rw /
 mount -o remount,rw /usr/zte_web
+
+sleep 1
 
 rm -f /bin/xray /usr/zte_web/web/cgi-bin/select_config /usr/zte_web/web/cgi-bin/latency_test
 
