@@ -1,5 +1,5 @@
 #!/bin/sh
-
+clear
 echo "Update Z-Box for Zte U50"
 
 # 1. Download files with a check to ensure it worked
