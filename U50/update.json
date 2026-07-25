@@ -1,5 +1,8 @@
 {
   "schema": "4",
+  "panel_version": "2.1.8",
+  "panel_bundle_url": "https://raw.githubusercontent.com/oresanju/zbox/main/U50/zbox-update-2026-07-25-085643.zbox",
+  "panel_bundle_sha256": "ea31986a8af6bbcd0abb182e425c3ff5c3ee196cf3a5bce7f72bf4a9a68be7dc",
   "xray_version": "26.2.6",
   "xray_bundle_url": "https://raw.githubusercontent.com/oresanju/zbox/main/U50/zbox-update-2026-07-25-084626.zbox",
   "xray_bundle_sha256": "c2e62c6b3fa88dc90f0d0c45d233d156ab0543a7e1dea928e49e37de896612ef"
