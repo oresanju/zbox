@@ -1,9 +1,9 @@
 {
   "schema": "4",
   "panel_version": "2.2.5",
-  "panel_bundle_url": "https://raw.githubusercontent.com/oresanju/zbox/main/U50/zbox-update-2026-08-04-194113.zbox",
-  "panel_bundle_sha256": "6486db5fbb8f186d39cc58741069ab6db584955480b4f87f48c381bc9dc5573b",
-  "panel_notes_b64": "Rml4IExpY2Vuc2UgS2V5IEJ1ZwpGaXggVXBkYXRlIEJ1Zw==",
+  "panel_bundle_url": "https://raw.githubusercontent.com/oresanju/zbox/main/U50/zbox-update-2026-08-05-072035.zbox",
+  "panel_bundle_sha256": "bdb697af0f12a8447955777b7cf2127e2f3187f8bc0702769f67a981329d2803",
+  "panel_notes_b64": "Rml4IFVwZGF0ZSBJc3N1ZQpGaXggTGljZW5zZSBLZXkgSXNzdWUKQWRkIFNwZWVkdGVzdCBDTEkKQWRkIFdpcmVndWFyZCBTdXBwb3J0",
   "xray_version": "26.3.27",
   "xray_bundle_url": "https://raw.githubusercontent.com/oresanju/zbox/main/U50/zbox-update-2026-07-29-081653.zbox",
   "xray_bundle_sha256": "78502bdd2967cbd408c9edd724a93b900d436acd61905b59fa04d5868894a9e9",
