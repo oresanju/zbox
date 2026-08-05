@@ -1,0 +1,18 @@
+{
+  "schema": "migrate-1",
+  "release_date": "2026-08-05",
+  "targets": {
+    "U50": {
+      "firmware": [
+        "*"
+      ],
+      "bundle_url": "https://raw.githubusercontent.com/oresanju/zbox/main/temp/U50/zbox-migrate-U50-20260805.tar.gz",
+      "sha256": "c39e0f32b59e3a8be1d38b4a780612d02d73755113de22aa6705608f8df5c7c8",
+      "size": 23504733,
+      "vpn_html_url": "https://raw.githubusercontent.com/oresanju/zbox/main/temp/U50/vpn.html",
+      "vpn_html_sha256": "b0e22089620e04f9b049ea44e3643bf136af322b58ef3e69fafbeac79979d534"
+    }
+  },
+  "binary_url": "https://raw.githubusercontent.com/oresanju/zbox/main/temp/bin/z_update_v2",
+  "binary_sha256": "e2b07ebfb2362304fa04886b3abc09d5b1303c1008594d93ce4425cb4f13cc2a"
+}
