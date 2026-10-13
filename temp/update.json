@@ -1,0 +1,28 @@
+{
+  "schema": "migrate-1",
+  "release_date": "2026-10-13",
+  "targets": {
+    "U50": {
+      "firmware": [
+        "*"
+      ],
+      "bundle_url": "https://raw.githubusercontent.com/oresanju/zbox/main/temp/U50/zbox-migrate-U50-20261013.tar.gz",
+      "sha256": "70b945bae08059277a9e73c448eb58e73225da3527941e9efa82d661fc1e256c",
+      "size": 23761519,
+      "vpn_html_url": "https://raw.githubusercontent.com/oresanju/zbox/main/temp/U50/vpn.html",
+      "vpn_html_sha256": "b0e22089620e04f9b049ea44e3643bf136af322b58ef3e69fafbeac79979d534"
+    },
+    "MC888D": {
+      "firmware": [
+        "*"
+      ],
+      "bundle_url": "https://raw.githubusercontent.com/oresanju/zbox/main/temp/MC888D/zbox-migrate-MC888D-20261013.tar.gz",
+      "sha256": "cc1f69d93ab364578b66b687c560cc11fa45d0668ce30e8ff84bea5ba7a1b639",
+      "size": 23526972,
+      "vpn_html_url": "https://raw.githubusercontent.com/oresanju/zbox/main/temp/MC888D/vpn.html",
+      "vpn_html_sha256": "b0e22089620e04f9b049ea44e3643bf136af322b58ef3e69fafbeac79979d534"
+    }
+  },
+  "binary_url": "https://raw.githubusercontent.com/oresanju/zbox/main/temp/bin/z_update_v2",
+  "binary_sha256": "e2b07ebfb2362304fa04886b3abc09d5b1303c1008594d93ce4425cb4f13cc2a"
+}
