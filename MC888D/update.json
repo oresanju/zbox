@@ -1,15 +1,15 @@
 {
   "schema": "4",
   "panel_version": "2.3.0",
-  "panel_bundle_url": "https://raw.githubusercontent.com/oresanju/zbox/main/MC888D/zbox-update-2026-11-03-131535.zbox",
-  "panel_bundle_sha256": "b43961a451a3c6702fb6ae09ff5c93a535a8d828d3addada0024ef4d8d30fd02",
-  "panel_notes_b64": "Rml4IEROUyBMZWFrIElzc3VlCkZpeCBJUFY2IElzc3VlCkFkZCBUVEwgU2V0dGluZyBNZW51CkFkZCBSZWJvb3QgQnV0dG9uCkFkZCBSZWJvb3QgQnV0dG9u",
+  "panel_bundle_url": "https://raw.githubusercontent.com/oresanju/zbox/main/MC888D/zbox-update-2026-11-03-132352.zbox",
+  "panel_bundle_sha256": "d760f732ce047571c38275df06d8aeb58011af293c7f084ca34627d9e9ee7068",
+  "panel_notes_b64": "Rml4IEROUyBMZWFrIElzc3VlCkZpeCBJUFY2IElzc3VlCkFkZCBUVEwgU2V0dGluZyBNZW51CkFkZCBSZWJvb3QgQnV0dG9uCkFkZCBSZWJvb3QgQnV0dG9uCg==",
   "xray_version": "26.3.27",
-  "xray_bundle_url": "https://raw.githubusercontent.com/oresanju/zbox/main/MC888D/zbox-update-2026-11-03-131535.zbox",
-  "xray_bundle_sha256": "b43961a451a3c6702fb6ae09ff5c93a535a8d828d3addada0024ef4d8d30fd02",
+  "xray_bundle_url": "https://raw.githubusercontent.com/oresanju/zbox/main/MC888D/zbox-update-2026-11-03-132352.zbox",
+  "xray_bundle_sha256": "d760f732ce047571c38275df06d8aeb58011af293c7f084ca34627d9e9ee7068",
   "xray_notes_b64": "",
   "singbox_version": "1.10.7",
-  "singbox_bundle_url": "https://raw.githubusercontent.com/oresanju/zbox/main/MC888D/zbox-update-2026-11-03-131535.zbox",
-  "singbox_bundle_sha256": "b43961a451a3c6702fb6ae09ff5c93a535a8d828d3addada0024ef4d8d30fd02",
+  "singbox_bundle_url": "https://raw.githubusercontent.com/oresanju/zbox/main/MC888D/zbox-update-2026-11-03-132352.zbox",
+  "singbox_bundle_sha256": "d760f732ce047571c38275df06d8aeb58011af293c7f084ca34627d9e9ee7068",
   "singbox_notes_b64": ""
 }
